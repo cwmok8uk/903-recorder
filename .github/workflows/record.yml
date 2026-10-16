@@ -1,0 +1,48 @@
+name: 叱咤903 每日自動錄音
+
+on:
+  schedule:
+    # UTC 時間 01:50 即係固定等於香港時間 09:50 (不受英國冬/夏令時間影響)
+    # 預設每日執行；如果只想星期一至五錄音，可將最後嘅 * 改為 1-5 (即 '50 1 * * 1-5')
+    - cron: '50 1 * * *'
+
+  # 允許你隨時手動撳掣即場試錄
+  workflow_dispatch:
+    inputs:
+      test_seconds:
+        description: '試錄秒數 (測試填 60；正式錄 2 小時填 7260)'
+        required: true
+        default: '60'
+
+jobs:
+  record-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: 1. 載入程式碼
+        uses: actions/checkout@v4
+
+      - name: 2. 安裝 Python、Playwright、FFmpeg 及 Rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg rclone
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: 3. 執行擷取及錄音
+        env:
+          RECORD_SECONDS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.test_seconds || '7260' }}
+          WAIT_FOR_10AM: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+        run: python record_903.py
+
+      - name: 4. 自動上傳至 Google Drive 並清理超過 14 日嘅舊檔
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          # 自動將錄音上傳到 Google Drive 嘅 903_Podcast 資料夾
+          rclone copy ./recordings gdrive:903_Podcast -v
+          # 自動刪除 Google Drive 入面超過 14 日嘅舊錄音
+          rclone delete gdrive:903_Podcast --min-age 14d -v
