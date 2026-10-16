@@ -5,8 +5,7 @@ import datetime
 import subprocess
 from playwright.sync_api import sync_playwright
 
-TOTAL_SECONDS = int(os.environ.get("RECORD_SECONDS", "7260"))  # 總共錄約 2 小時
-CHUNK_SECONDS = 1800  # 每 30 分鐘（1800秒）切成一個小檔案，防斷線遺失
+TOTAL_SECONDS = int(os.environ.get("RECORD_SECONDS", "7260"))  # 目標總長度約 2 小時零 1 分鐘
 WAIT_FOR_10AM = os.environ.get("WAIT_FOR_10AM", "true").lower() == "true"
 
 def wait_until_hk_10am():
@@ -89,41 +88,47 @@ def main():
     if cookies_str:
         headers += f"Cookie: {cookies_str}\r\n"
 
-    # 計算總共需要錄幾多個分段（例如 7260 秒會分拆成多個 1800 秒的 chunk）
     remaining_seconds = TOTAL_SECONDS
-    part = 1
+    attempt_count = 1
 
+    # 智能接力迴圈：只要未錄夠總秒數，就會一直保持/重啟錄音
     while remaining_seconds > 0:
-        current_chunk = min(remaining_seconds, CHUNK_SECONDS)
-        output_file = f"recordings/903_{file_stamp}_part{part}.m4a"
-        
-        print(f"\n[開始錄音] 第 {part} 分段（時長: {current_chunk} 秒） -> {output_file}")
+        if attempt_count == 1:
+            output_file = f"recordings/903_{file_stamp}.m4a"
+        else:
+            output_file = f"recordings/903_{file_stamp}_part{attempt_count}.m4a"
+
+        print(f"\n[開始錄音] 預計錄製剩餘 {remaining_seconds} 秒 -> 檔案: {output_file}")
 
         cmd = [
             "ffmpeg", "-y",
             "-headers", headers,
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
             "-i", m3u8_url,
-            "-t", str(current_chunk),
+            "-t", str(remaining_seconds),
             "-c", "copy",
             "-bsf:a", "aac_adtstoasc",
-            "-metadata", f"title=叱咤903重溫 {date_title} (Part {part})",
+            "-metadata", f"title=叱咤903重溫 {date_title}",
             "-metadata", "artist=叱咤903",
             "-metadata", "album=我的903私人重溫",
             output_file
         ]
 
+        start_time = time.time()
         try:
             subprocess.run(cmd, check=True)
-            print(f"[完成] 第 {part} 分段錄音成功！")
+            print(f"[完成] 本段錄音順利完成！")
+            break # 順利完成就直接跳出迴圈
         except subprocess.CalledProcessError as e:
-            print(f"[警告] 第 {part} 分段錄音中途出錯 ({e})，嘗試重新連接並繼續錄製下一段...")
-            # 如果中途斷線，等 5 秒重新獲取串流並繼續錄下一段
-            time.sleep(5)
+            elapsed = time.time() - start_time
+            print(f"[警告] 錄音中途因故中斷（已錄了 {int(elapsed)} 秒），準備自動無縫接力...")
+            remaining_seconds -= int(elapsed)
+            attempt_count += 1
+            time.sleep(3) # 稍微抖動冷卻後自動重開新檔接力
 
-        remaining_seconds -= current_chunk
-        part += 1
-
-    print(f"\n[大功告成] 所有錄音分段已順利完成並準備上傳！")
+    print(f"\n[大功告成] 錄音任務全數圓滿結束！")
 
 if __name__ == "__main__":
     main()
