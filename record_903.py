@@ -5,7 +5,8 @@ import datetime
 import subprocess
 from playwright.sync_api import sync_playwright
 
-RECORD_SECONDS = int(os.environ.get("RECORD_SECONDS", "7260"))
+TOTAL_SECONDS = int(os.environ.get("RECORD_SECONDS", "7260"))  # 總共錄約 2 小時
+CHUNK_SECONDS = 1800  # 每 30 分鐘（1800秒）切成一個小檔案，防斷線遺失
 WAIT_FOR_10AM = os.environ.get("WAIT_FOR_10AM", "true").lower() == "true"
 
 def wait_until_hk_10am():
@@ -75,7 +76,6 @@ def main():
     hk_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
     date_title = hk_now.strftime("%Y-%m-%d")
     file_stamp = hk_now.strftime("%Y-%m-%d_%H%M")
-    output_file = f"recordings/903_{file_stamp}.m4a"
 
     print("[動態尋找] 正在獲取串流網址與驗證 Cookie...")
     m3u8_url, cookies_str, user_agent = get_stream_info()
@@ -85,29 +85,45 @@ def main():
         m3u8_url = "https://live-s.881903.com/edge-aac/903hd/playlist.m3u8"
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
-    print(f"[開始錄音] 串流網址: {m3u8_url}")
-    print(f"[目標檔案] {output_file}")
-
-    # 組合防盜鏈所需的 Headers
     headers = f"Referer: https://www.881903.com/\r\nUser-Agent: {user_agent}\r\n"
     if cookies_str:
         headers += f"Cookie: {cookies_str}\r\n"
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-headers", headers,
-        "-i", m3u8_url,
-        "-t", str(RECORD_SECONDS),
-        "-c", "copy",
-        "-bsf:a", "aac_adtstoasc",
-        "-metadata", f"title=叱咤903 節目重溫 ({date_title})",
-        "-metadata", "artist=叱咤903",
-        "-metadata", "album=我的903私人重溫",
-        output_file
-    ]
+    # 計算總共需要錄幾多個分段（例如 7260 秒會分拆成多個 1800 秒的 chunk）
+    remaining_seconds = TOTAL_SECONDS
+    part = 1
 
-    subprocess.run(cmd, check=True)
-    print(f"[完成] 錄音成功並準備上傳：{output_file}")
+    while remaining_seconds > 0:
+        current_chunk = min(remaining_seconds, CHUNK_SECONDS)
+        output_file = f"recordings/903_{file_stamp}_part{part}.m4a"
+        
+        print(f"\n[開始錄音] 第 {part} 分段（時長: {current_chunk} 秒） -> {output_file}")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-headers", headers,
+            "-i", m3u8_url,
+            "-t", str(current_chunk),
+            "-c", "copy",
+            "-bsf:a", "aac_adtstoasc",
+            "-metadata", f"title=叱咤903重溫 {date_title} (Part {part})",
+            "-metadata", "artist=叱咤903",
+            "-metadata", "album=我的903私人重溫",
+            output_file
+        ]
+
+        try:
+            subprocess.run(cmd, check=True)
+            print(f"[完成] 第 {part} 分段錄音成功！")
+        except subprocess.CalledProcessError as e:
+            print(f"[警告] 第 {part} 分段錄音中途出錯 ({e})，嘗試重新連接並繼續錄製下一段...")
+            # 如果中途斷線，等 5 秒重新獲取串流並繼續錄下一段
+            time.sleep(5)
+
+        remaining_seconds -= current_chunk
+        part += 1
+
+    print(f"\n[大功告成] 所有錄音分段已順利完成並準備上傳！")
 
 if __name__ == "__main__":
     main()
