@@ -2,18 +2,16 @@ name: 叱咤903 每日自動錄音
 
 on:
   schedule:
-    # UTC 時間 01:50 即係固定等於香港時間 09:50 (不受英國冬/夏令時間影響)
-    # 預設每日執行；如果只想星期一至五錄音，可將最後嘅 * 改為 1-5 (即 '50 1 * * 1-5')
-    - cron: '50 1 * * *'
+    # 星期一至五 UTC 時間 01:50 (即香港時間 09:50)
+    - cron: '50 1 * * 1-5'
 
-  # 允許你隨時手動撳掣即場試錄
   workflow_dispatch:
     inputs:
       test_seconds:
         description: '試錄秒數 (測試填 60；正式錄 2 小時填 7260)'
         required: true
         default: '60'
-
+        
 jobs:
   record-and-upload:
     runs-on: ubuntu-latest
