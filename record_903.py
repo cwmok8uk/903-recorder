@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import time
 import datetime
@@ -20,8 +19,11 @@ def wait_until_hk_10am():
         print(f"[等待中] 距離香港時間 09:59:30 仲有 {int(wait_sec)} 秒...")
         time.sleep(min(wait_sec, 15))
 
-def get_stream_from_browser():
+def get_stream_info():
     m3u8_url = None
+    cookies_str = ""
+    user_agent = ""
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -31,9 +33,9 @@ def get_stream_from_browser():
 
         def handle_request(request):
             nonlocal m3u8_url
-            if ".m3u8" in request.url:
+            if ".m3u8" in request.url and not m3u8_url:
                 m3u8_url = request.url
-                print(f"[捕捉到 m3u8] {m3u8_url}")
+                print(f"[成功捕捉 m3u8] {m3u8_url}")
 
         page.on("request", handle_request)
         
@@ -43,26 +45,27 @@ def get_stream_from_browser():
         except Exception:
             pass
 
-        # 自動嘗試點擊播放掣或切換頻道以激發串流載入
-        for _ in range(10):
+        for _ in range(12):
             if m3u8_url:
                 break
             try:
                 page.evaluate("""() => {
-                    // 點擊同意 Cookie
                     document.querySelectorAll('button, a').forEach(el => {
                         if (el.innerText && (el.innerText.includes('同意') || el.innerText.includes('關閉'))) el.click();
                     });
-                    // 點擊播放按鈕
-                    const btn = document.querySelector('[class*="play"], button, [class*="player"]');
+                    const btn = document.querySelector('[class*="play"], button');
                     if (btn) btn.click();
                 }""")
             except Exception:
                 pass
             page.wait_for_timeout(2000)
 
+        user_agent = page.evaluate("navigator.userAgent")
+        cookies = context.cookies()
+        cookies_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
         browser.close()
-    return m3u8_url
+
+    return m3u8_url, cookies_str, user_agent
 
 def main():
     if WAIT_FOR_10AM:
@@ -74,20 +77,25 @@ def main():
     file_stamp = hk_now.strftime("%Y-%m-%d_%H%M")
     output_file = f"recordings/903_{file_stamp}.m4a"
 
-    print("[動態尋找] 正在獲取當刻最新的直播串流網址...")
-    m3u8_url = get_stream_from_browser()
+    print("[動態尋找] 正在獲取串流網址與驗證 Cookie...")
+    m3u8_url, cookies_str, user_agent = get_stream_info()
 
-    # 如果動態捉唔到，退一步使用備用串流格式
     if not m3u8_url:
-        print("[警告] 動態捕捉未成功，使用備用串流通道...")
-        m3u8_url = "https://stream.881903.com/live/ch2/playlist.m3u8"
+        print("[警告] 動態捕捉未成功，使用備用串流...")
+        m3u8_url = "https://live-s.881903.com/edge-aac/903hd/playlist.m3u8"
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
     print(f"[開始錄音] 串流網址: {m3u8_url}")
     print(f"[目標檔案] {output_file}")
 
+    # 組合防盜鏈所需的 Headers
+    headers = f"Referer: https://www.881903.com/\r\nUser-Agent: {user_agent}\r\n"
+    if cookies_str:
+        headers += f"Cookie: {cookies_str}\r\n"
+
     cmd = [
         "ffmpeg", "-y",
-        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "-headers", headers,
         "-i", m3u8_url,
         "-t", str(RECORD_SECONDS),
         "-c", "copy",
@@ -99,7 +107,7 @@ def main():
     ]
 
     subprocess.run(cmd, check=True)
-    print(f"[完成] 錄音成功：{output_file}")
+    print(f"[完成] 錄音成功並準備上傳：{output_file}")
 
 if __name__ == "__main__":
     main()
