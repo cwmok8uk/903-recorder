@@ -5,19 +5,35 @@ import datetime
 import subprocess
 from playwright.sync_api import sync_playwright
 
-TOTAL_SECONDS = int(os.environ.get("RECORD_SECONDS", "7260"))  # 目標總長度約 2 小時零 1 分鐘
 WAIT_FOR_10AM = os.environ.get("WAIT_FOR_10AM", "true").lower() == "true"
 
-def wait_until_hk_10am():
+def get_record_seconds():
     hk_tz = datetime.timezone(datetime.timedelta(hours=8))
-    while True:
-        now = datetime.datetime.now(hk_tz)
-        target = now.replace(hour=9, minute=59, second=30, microsecond=0)
-        if now >= target or now.hour >= 10:
-            break
-        wait_sec = (target - now).total_seconds()
+    now = datetime.datetime.now(hk_tz)
+    
+    # 手動測試模式（於 GitHub 點擊 Run workflow 時）直接回傳自訂秒數
+    if not WAIT_FOR_10AM:
+        return int(os.environ.get("RECORD_SECONDS", "60"))
+        
+    # 目標結束時間為香港時間 12:01:00
+    end_time = now.replace(hour=12, minute=1, second=0, microsecond=0)
+    
+    # 1. 嚴重遲到防呆：如果已經過咗 12:01，直接放棄錄音
+    if now >= end_time:
+        print(f"[嚴重錯誤] 現時為香港時間 {now.strftime('%H:%M:%S')}。已經過咗 12:00 節目時間，為免錄錯節目，取消本次錄音！")
+        sys.exit(1)
+        
+    # 2. 準時喚醒：等到 09:59:30 準備開始
+    start_time = now.replace(hour=9, minute=59, second=30, microsecond=0)
+    if now < start_time:
+        wait_sec = (start_time - now).total_seconds()
         print(f"[等待中] 距離香港時間 09:59:30 仲有 {int(wait_sec)} 秒...")
-        time.sleep(min(wait_sec, 15))
+        time.sleep(wait_sec)
+        now = datetime.datetime.now(hk_tz)
+        
+    # 3. 計算由當前到 12:01 仲剩幾多秒需要錄製
+    record_sec = (end_time - now).total_seconds()
+    return int(record_sec)
 
 def get_stream_info():
     m3u8_url = None
@@ -68,8 +84,7 @@ def get_stream_info():
     return m3u8_url, cookies_str, user_agent
 
 def main():
-    if WAIT_FOR_10AM:
-        wait_until_hk_10am()
+    remaining_seconds = get_record_seconds()
 
     os.makedirs("recordings", exist_ok=True)
     hk_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
@@ -88,17 +103,16 @@ def main():
     if cookies_str:
         headers += f"Cookie: {cookies_str}\r\n"
 
-    remaining_seconds = TOTAL_SECONDS
     attempt_count = 1
 
-    # 智能接力迴圈：只要未錄夠總秒數，就會一直保持/重啟錄音
+    # 智能接力迴圈
     while remaining_seconds > 0:
         if attempt_count == 1:
             output_file = f"recordings/903_{file_stamp}.m4a"
         else:
             output_file = f"recordings/903_{file_stamp}_part{attempt_count}.m4a"
 
-        print(f"\n[開始錄音] 預計錄製剩餘 {remaining_seconds} 秒 -> 檔案: {output_file}")
+        print(f"\n[開始錄音] 預計錄製剩餘 {int(remaining_seconds)} 秒 -> 檔案: {output_file}")
 
         cmd = [
             "ffmpeg", "-y",
@@ -107,7 +121,7 @@ def main():
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5",
             "-i", m3u8_url,
-            "-t", str(remaining_seconds),
+            "-t", str(int(remaining_seconds)),
             "-c", "copy",
             "-bsf:a", "aac_adtstoasc",
             "-metadata", f"title=叱咤903重溫 {date_title}",
@@ -120,13 +134,13 @@ def main():
         try:
             subprocess.run(cmd, check=True)
             print(f"[完成] 本段錄音順利完成！")
-            break # 順利完成就直接跳出迴圈
+            break 
         except subprocess.CalledProcessError as e:
             elapsed = time.time() - start_time
             print(f"[警告] 錄音中途因故中斷（已錄了 {int(elapsed)} 秒），準備自動無縫接力...")
-            remaining_seconds -= int(elapsed)
+            remaining_seconds -= elapsed
             attempt_count += 1
-            time.sleep(3) # 稍微抖動冷卻後自動重開新檔接力
+            time.sleep(3) 
 
     print(f"\n[大功告成] 錄音任務全數圓滿結束！")
 
